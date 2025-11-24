@@ -45,19 +45,8 @@ The suite is divided into two core components:
 
 - Write permissions for cache directories
 
-## Quick Start
-### 1. Build Release Package
 
-Use the included builder utility to generate a deployable package. This handles asset extraction and directory setup automatically.
-
-```bash
-chmod +x package_builder.sh
-./package_builder.sh
-```
-
-This will generate `release_package.tar.gz`.
-
-### 2. Server Deployment
+### 1. Server Deployment
 
 Deploy the contents of the `server` directory from the release package to your web host. Ensure the `public` folder is set as the document root.
 
@@ -72,6 +61,8 @@ Update the `activator.py` script to point to your deployed server URL before run
 sudo python3 client/activator.py
 ```
 
+
+NOTE: The OFFLINE version will NOT work, sorry i was sick a made a mistake.
 
 ## Disclaimer
 
