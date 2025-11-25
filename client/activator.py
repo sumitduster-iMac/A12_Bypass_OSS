@@ -22,7 +22,8 @@ class Style:
 
 class BypassAutomation:
     def __init__(self):
-        self.api_url = "http://192.168.0.103:8000/get2.php"
+        #ipconfig getifaddr en1 and start php and start: php -S 192.168.0.106:8000 -t public
+        self.api_url = "http://your-ip:8000/get2.php" 
         self.timeouts = {
             'asset_wait': 300,
             'asset_delete_delay': 15,
@@ -130,57 +131,133 @@ class BypassAutomation:
             print(f"{Style.RED}❌ Invalid format. Must be 8-4-4-4-12 hex characters (e.g. 2A22A82B-C342-444D-972F-5270FB5080DF).{Style.RESET}")
 
     def get_guid_auto(self):
-        """Автоматическое определение GUID (опционально)"""
-        self.log("Attempting to auto-detect GUID from logs...", "detail")
-        
+        """Precise GUID search via raw tracev3 scanning with detailed logging"""
+        self.log("🔍 Scanning logdata.LiveData.tracev3 for 'BLDatabaseManager'...", "step")
+
         udid = self.device_info['UniqueDeviceID']
         log_path = f"{udid}.logarchive"
         if os.path.exists(log_path):
             shutil.rmtree(log_path)
-        
-        code, _, _ = self._run_cmd(["pymobiledevice3", "syslog", "collect", log_path], timeout=180)
-        logs = ""
-        
-        if code == 0 and os.path.exists(log_path):
-            tmp = "final.logarchive"
-            if os.path.exists(tmp):
-                shutil.rmtree(tmp)
-            shutil.move(log_path, tmp)
-            _, logs, _ = self._run_cmd(["/usr/bin/log", "show", "--style", "syslog", "--archive", tmp])
-            shutil.rmtree(tmp)
-        else:
-            self.log("Log archive failed — falling back to live syslog (60s)...", "warn")
-            try:
-                proc = subprocess.Popen(
-                    ["pymobiledevice3", "syslog", "live"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                time.sleep(60)
-                proc.terminate()
-                logs, _ = proc.communicate()
-            except Exception as e:
-                self.log(f"Live syslog failed: {e}", "error")
+
+        # === Этап 1: Сбор логов ===
+        self.log("  ╰─▶ Collecting device logs (up to 120s)...", "detail")
+        code, _, err = self._run_cmd(["pymobiledevice3", "syslog", "collect", log_path], timeout=120)
+        if code != 0 or not os.path.exists(log_path):
+            self.log(f"❌ Log collection failed: {err}", "error")
+            return None
+        self.log("  ╰─▶ Logs collected successfully", "detail")
+
+
+        trace_file = os.path.join(log_path, "logdata.LiveData.tracev3")
+        if not os.path.exists(trace_file):
+            self.log("❌ logdata.LiveData.tracev3 not found in archive", "error")
+            shutil.rmtree(log_path)
+            return None
+        size_mb = os.path.getsize(trace_file) / (1024 * 1024)
+        self.log(f"  ╰─▶ Found logdata.LiveData.tracev3 ({size_mb:.1f} MB)", "detail")
+
+        candidates = []
+        found_bl = False
+
+        try:
+            with open(trace_file, 'rb') as f:
+                data = f.read()
+
+            needle = b'BLDatabaseManager'
+            pos = 0
+            hit_count = 0
+
+
+            self.log("  ╰─▶ Scanning for 'BLDatabaseManager' in binary...", "detail")
+            while True:
+                pos = data.find(needle, pos)
+                if pos == -1:
+                    break
+                found_bl = True
+                hit_count += 1
+                if hit_count <= 5:  # Логгируем первые 5 вхождений
+                    snippet = data[pos:pos+100]
+                    try:
+                        text = snippet[:60].decode('utf-8', errors='replace')
+                        self.log(f"      → Hit #{hit_count}: ...{text}...", "detail")
+                    except:
+                        self.log(f"      → Hit #{hit_count} (binary snippet)", "detail")
+                pos += 1
+
+            if not found_bl:
+                self.log("❌ 'BLDatabaseManager' NOT FOUND in tracev3", "error")
                 return None
 
-        guid_pattern = re.compile(r'SystemGroup/([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})/')
-        for line in logs.splitlines():
-            if "BLDatabaseManager" in line or "systemgroup" in line.lower():
-                match = guid_pattern.search(line)
-                if match:
-                    return match.group(1).upper()
-        return None
+            self.log(f"✅ Found {hit_count} occurrence(s) of 'BLDatabaseManager'", "success")
 
-    # Новая функция: Получаем все URL от сервера
+
+            self.log("  ╰─▶ Searching ±1KB around each 'BLDatabaseManager' for GUIDs...", "detail")
+            import re
+            guid_pat = re.compile(rb'[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}', re.IGNORECASE)
+
+            pos = 0
+            while True:
+                pos = data.find(needle, pos)
+                if pos == -1:
+                    break
+
+
+                start = max(0, pos - 1024)
+                end = min(len(data), pos + len(needle) + 1024)
+                window = data[start:end]
+
+                matches = guid_pat.findall(window)
+                for raw_guid in matches:
+                    guid = raw_guid.decode('ascii').upper()
+                    # Фильтр "не мусор"
+                    clean = guid.replace('0', '').replace('-', '')
+                    if len(clean) >= 8:  # хотя бы 4 hex-байта значимых
+                        candidates.append(guid)
+                        offset = start + window.find(raw_guid) - pos
+                        direction = "←" if offset < 0 else "→"
+                        self.log(
+                            f"      → GUID {guid} found {abs(offset)} bytes {direction} from 'BLDatabaseManager'",
+                            "detail"
+                        )
+
+                pos += 1
+
+
+            if not candidates:
+                self.log("❌ No valid GUIDs found near 'BLDatabaseManager'", "error")
+                return None
+
+            from collections import Counter
+            counts = Counter(candidates)
+            total = len(candidates)
+            unique = len(counts)
+
+            self.log(f"  ╰─▶ Found {total} GUID candidate(s), {unique} unique", "info")
+            for guid, freq in counts.most_common(5):
+                self.log(f"      → {guid} (x{freq})", "detail")
+
+            best_guid, freq = counts.most_common(1)[0]
+            if freq >= 2 or total == 1:
+                self.log(f"✅ CONFIDENT MATCH: {best_guid}", "success")
+                return best_guid
+            else:
+                self.log(f"⚠️  Low-confidence GUID (x{freq}): {best_guid}", "warn")
+
+                return best_guid
+
+        finally:
+            if os.path.exists(log_path):
+                shutil.rmtree(log_path)
+
+
     def get_all_urls_from_server(self, prd, guid, sn):
-        """Запрашивает у сервера все три URL (stage1, stage2, stage3)"""
+        """Requests all three URLs (stage1, stage2, stage3) from the server"""
         params = f"prd={prd}&guid={guid}&sn={sn}"
         url = f"{self.api_url}?{params}"
 
         self.log(f"Requesting all URLs from server: {url}", "detail")
         
-        # Используем curl для получения JSON
+
         code, out, err = self._run_cmd(["curl", "-s", url])
         if code != 0:
             self.log(f"Server request failed: {err}", "error")
