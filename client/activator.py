@@ -139,7 +139,7 @@ class BypassAutomation:
         if os.path.exists(log_path):
             shutil.rmtree(log_path)
 
-        # === Этап 1: Сбор логов ===
+        # === 1: Log collection ===
         self.log("  ╰─▶ Collecting device logs (up to 120s)...", "detail")
         code, _, err = self._run_cmd(["pymobiledevice3", "syslog", "collect", log_path], timeout=120)
         if code != 0 or not os.path.exists(log_path):
@@ -209,7 +209,7 @@ class BypassAutomation:
                 matches = guid_pat.findall(window)
                 for raw_guid in matches:
                     guid = raw_guid.decode('ascii').upper()
-                    # Фильтр "не мусор"
+                    # "Not trash" filter
                     clean = guid.replace('0', '').replace('-', '')
                     if len(clean) >= 8:  # хотя бы 4 hex-байта значимых
                         candidates.append(guid)
